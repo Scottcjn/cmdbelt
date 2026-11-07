@@ -581,13 +581,21 @@ severity = "medium"
 reason = "re-executing systemd"
 
 [[rule]]
-id = "mount-umount"
-cmd = ["mount", "umount", "mountpoint", "swapoff", "losetup", "zfs", "zpool", "lvremove", "vgremove", "pvremove", "cryptsetup"]
-flags_none = ["l", "list", "h", "help", "V", "version"]
+id = "mount"
+cmd = ["mount", "losetup", "zfs", "zpool", "cryptsetup"]
+flags_none = ["l", "list", "h", "help", "V", "version", "a"]
 min_positional = 1
 action = "ask"
 severity = "high"
-reason = "changing mounts/volumes (#59060: 'fucked up mounts')"
+reason = "changing mounts/volumes (#59060 class: 'messed up mounts')"
+
+[[rule]]
+id = "umount-swapoff"
+cmd = ["umount", "swapoff", "lvremove", "vgremove", "pvremove", "zfs", "zpool"]
+flags_none = ["h", "help", "V", "version"]
+action = "ask"
+severity = "high"
+reason = "unmounting or removing a volume (#59060 class)"
 
 [[rule]]
 id = "fstab-crypttab"
@@ -838,15 +846,15 @@ reason = "firewall change can lock you out of a remote host"
 [[rule]]
 id = "network-down"
 cmd = ["ip", "ifconfig", "nmcli", "netplan", "ifdown", "wg-quick", "tailscale"]
-regex = "(?i)(\\s(down|del|delete|flush|disconnect|logout|disable)(\\s|$)|link set .* down|dev \\S+ down|\\sapply)"
+regex = "(?i)(\\s(down|off|del|delete|flush|disconnect|logout|disable)(\\s|$)|link set .* down|dev \\S+ down|\\sapply)"
 action = "ask"
 severity = "high"
 reason = "taking an interface or VPN down can cut the session"
 
 [[rule]]
 id = "pkg-remove"
-cmd = ["apt", "apt-get", "aptitude", "dnf", "yum", "zypper", "pacman", "apk", "brew", "snap", "flatpak", "emerge"]
-regex = "(?i)(\\s(remove|purge|autoremove|uninstall|erase|rm|zap)(\\s|$)|pacman\\s+-R|apk\\s+del|-Rns)"
+cmd = ["apt", "apt-get", "aptitude", "dnf", "yum", "zypper", "pacman", "apk", "brew", "snap", "flatpak", "emerge", "dpkg", "rpm"]
+regex = "(?i)(\\s(remove|purge|autoremove|uninstall|erase|rm|zap)(\\s|$)|pacman\\s+-R|apk\\s+del|-Rns|--purge|--remove|\\s-[rP]\\s|rpm\\s+-e)"
 action = "ask"
 severity = "high"
 reason = "removing system packages"
@@ -909,7 +917,7 @@ reason = "writing a file at the top of the home directory"
 
 [[rule]]
 id = "copy-into-ssh-rc"
-cmd = ["cp", "mv", "tee", "ln", "install", "rsync", "sed", "truncate", "touch", "chmod", "chown", "cat", "echo", "printf", "ssh-keygen", "ssh-add", "ssh-copy-id"]
+cmd = ["cp", "mv", "tee", "ln", "install", "rsync", "sed", "truncate", "touch", "chmod", "chown", "cat", "echo", "printf", "ssh-add", "ssh-copy-id"]
 args_path_any = ["ssh", "shell_rc"]
 action = "ask"
 severity = "high"
@@ -918,7 +926,8 @@ reason = "touching ~/.ssh or shell startup files"
 [[rule]]
 id = "ssh-keygen-overwrite"
 cmd = ["ssh-keygen"]
-flags_any = ["f", "R", "y"]
+flags_any = ["f", "R", "A", "t", "p", "c"]
+flags_none = ["l", "L", "B", "E", "F", "y", "Y"]
 action = "ask"
 severity = "high"
 reason = "ssh-keygen -f can overwrite an existing key; -R edits known_hosts"
