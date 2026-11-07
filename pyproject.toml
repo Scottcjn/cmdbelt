@@ -27,7 +27,7 @@ dev = ["pytest", "ruff", "mypy"]
 where = ["src"]
 
 [tool.setuptools.package-data]
-cmdbelt = ["rules/*.toml", "py.typed"]
+cmdbelt = ["data/*.toml", "py.typed"]
 
 [tool.ruff]
 target-version = "py310"
@@ -46,3 +46,4 @@ mypy_path = "src"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+addopts = "--basetemp=.tmp-tests -p no:cacheprovider"

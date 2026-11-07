@@ -1,0 +1,1097 @@
+# cmdbelt built-in rule pack (v0.1).
+#
+# Each [[rule]] matches one execution unit (see parser.py). Fields:
+#   id, action (deny|ask|allow), reason, severity, priority (default 0)
+#   cmd = [...]            argv[0] basename is one of these
+#   subcmd = [...]         first positional argument
+#   flags_any/flags_all/flags_none   canonical flags ("r", "rf" clusters expand, "force")
+#   args_any / args_regex  positional literal / regex on any argument
+#   args_path_any = [...]  any positional arg has one of: root home etc ssh shell_rc dev
+#                          system outside glob dynamic dot project_root ancestor tmp
+#   redirect_path_any      same categories applied to >, >> targets
+#   pipe_from = [...]      stdin comes from one of these commands
+#   remote = true/false    only via ssh / only local
+#   dynamic_args = true    args come from xargs/find/$(...)/$VAR
+#   wrappers_any = [...]   e.g. ["sudo"]
+#   regex                  regex over the normalized unit (shlex-joined argv)
+#   text_regex             regex over args + heredoc (SQL etc.)
+#   budget = "name"        count against a shared budget when allowed
+#   mutates = true/false   force snapshot decision
+#
+# When several rules match a unit: highest priority wins, ties -> deny > ask > allow.
+# Across units: the strongest action wins.
+
+# ------------------------------------------------------------------ rm / deletion
+
+[[rule]]
+id = "rm-recursive-root-home"
+cmd = ["rm"]
+flags_any = ["r", "R", "recursive"]
+args_path_any = ["root", "home", "ancestor"]
+action = "deny"
+severity = "critical"
+reason = "recursive delete of /, your home directory, or a parent of the project"
+
+[[rule]]
+id = "rm-recursive-system"
+cmd = ["rm"]
+flags_any = ["r", "R", "recursive"]
+args_path_any = ["system", "etc", "dev"]
+action = "deny"
+severity = "critical"
+reason = "recursive delete inside a system directory (/usr, /var, /etc, /boot, ...)"
+
+[[rule]]
+id = "rm-recursive-glob"
+cmd = ["rm"]
+flags_any = ["r", "R", "recursive"]
+args_path_any = ["glob"]
+action = "deny"
+severity = "high"
+reason = "recursive delete with an unquoted glob; the shell decides what dies"
+
+[[rule]]
+id = "rm-recursive-outside-project"
+cmd = ["rm"]
+flags_any = ["r", "R", "recursive"]
+args_path_any = ["outside"]
+action = "deny"
+severity = "high"
+reason = "recursive delete outside the project directory (and not in a temp dir)"
+
+[[rule]]
+id = "rm-recursive-project-root"
+cmd = ["rm"]
+flags_any = ["r", "R", "recursive"]
+args_path_any = ["dot", "project_root"]
+action = "ask"
+severity = "high"
+reason = "recursive delete of the whole project directory"
+
+[[rule]]
+id = "rm-recursive-dynamic"
+cmd = ["rm"]
+flags_any = ["r", "R", "recursive"]
+dynamic_args = true
+action = "ask"
+severity = "high"
+reason = "recursive delete where the targets come from a variable, xargs, find or $(...) and cannot be checked"
+
+[[rule]]
+id = "rm-ssh-keys"
+cmd = ["rm", "shred", "truncate", "unlink"]
+args_path_any = ["ssh", "shell_rc"]
+action = "deny"
+severity = "high"
+reason = "deleting SSH keys or shell startup files"
+
+[[rule]]
+id = "rm-system-file"
+cmd = ["rm", "shred", "unlink"]
+args_path_any = ["etc", "system", "dev"]
+action = "deny"
+severity = "high"
+reason = "deleting files under system directories"
+
+[[rule]]
+id = "rm-remote"
+cmd = ["rm"]
+flags_any = ["r", "R", "recursive"]
+remote = true
+action = "ask"
+severity = "high"
+reason = "recursive delete on a remote host (not undoable)"
+
+[[rule]]
+id = "find-delete-dangerous"
+cmd = ["find"]
+args_any = ["-delete"]
+args_path_any = ["root", "home", "system", "etc", "outside", "ancestor"]
+action = "deny"
+severity = "critical"
+reason = "find -delete over a system, home or out-of-project tree"
+
+[[rule]]
+id = "find-delete"
+cmd = ["find"]
+args_any = ["-delete"]
+action = "ask"
+severity = "medium"
+reason = "find -delete removes everything that matches; confirm the filter"
+
+[[rule]]
+id = "shred"
+cmd = ["shred", "wipe", "srm"]
+action = "ask"
+severity = "high"
+reason = "secure deletion cannot be undone"
+
+# ------------------------------------------------------------------ git
+
+[[rule]]
+id = "git-reset-hard"
+cmd = ["git"]
+subcmd = ["reset"]
+flags_any = ["hard", "merge"]
+action = "ask"
+severity = "high"
+reason = "git reset --hard throws away uncommitted work in the worktree (including other agents' edits)"
+
+[[rule]]
+id = "git-checkout-discard"
+cmd = ["git"]
+subcmd = ["checkout", "restore"]
+args_any = [".", "--", "*", "./", ":/"]
+flags_none = ["b", "B", "orphan", "staged", "S"]
+action = "ask"
+severity = "high"
+reason = "discards uncommitted changes in the worktree"
+
+[[rule]]
+id = "git-restore-worktree"
+cmd = ["git"]
+subcmd = ["restore"]
+flags_none = ["staged", "S"]
+action = "ask"
+severity = "medium"
+reason = "git restore overwrites working-tree edits"
+
+[[rule]]
+id = "git-clean-x"
+cmd = ["git"]
+subcmd = ["clean"]
+flags_any = ["x", "X"]
+action = "deny"
+severity = "critical"
+reason = "git clean -x deletes ignored files too (venvs, .env, build caches, local configs)"
+
+[[rule]]
+id = "git-clean-force"
+cmd = ["git"]
+subcmd = ["clean"]
+flags_any = ["f", "force", "d"]
+action = "ask"
+severity = "high"
+reason = "git clean deletes untracked files"
+
+[[rule]]
+id = "git-push-force-main"
+cmd = ["git"]
+subcmd = ["push"]
+flags_any = ["f", "force", "force-with-lease", "force-if-includes"]
+args_regex = "(^|:|/)(main|master|trunk|develop|production|release)$"
+action = "deny"
+severity = "critical"
+reason = "force push to a protected branch rewrites shared history"
+
+[[rule]]
+id = "git-push-force-current"
+cmd = ["git"]
+subcmd = ["push"]
+flags_any = ["f", "force"]
+max_positional = 1
+action = "deny"
+severity = "critical"
+reason = "force push without an explicit refspec: the current branch may be main"
+
+[[rule]]
+id = "git-push-force"
+cmd = ["git"]
+subcmd = ["push"]
+flags_any = ["f", "force", "force-with-lease", "force-if-includes"]
+action = "ask"
+severity = "high"
+reason = "force push rewrites remote history"
+
+[[rule]]
+id = "git-push-delete"
+cmd = ["git"]
+subcmd = ["push"]
+flags_any = ["d", "delete"]
+action = "ask"
+severity = "high"
+reason = "deleting a remote branch"
+
+[[rule]]
+id = "git-push-delete-refspec"
+cmd = ["git"]
+subcmd = ["push"]
+args_regex = "^:[^:]+$"
+action = "ask"
+severity = "high"
+reason = "push with an empty-source refspec deletes the remote branch"
+
+[[rule]]
+id = "git-push"
+cmd = ["git"]
+subcmd = ["push"]
+action = "allow"
+severity = "info"
+reason = "outward write; counted against github_write budget"
+budget = "github_write"
+
+[[rule]]
+id = "git-stash-bare"
+cmd = ["git"]
+subcmd = ["stash"]
+max_positional = 0
+action = "ask"
+severity = "medium"
+reason = "bare git stash hides every uncommitted change, including other agents' work"
+
+[[rule]]
+id = "git-stash-destructive"
+cmd = ["git"]
+subcmd = ["stash"]
+subcmd2 = ["drop", "clear", "push", "save"]
+action = "ask"
+severity = "medium"
+reason = "git stash drop/clear discards stashed work; stash push hides worktree changes"
+
+[[rule]]
+id = "git-branch-force-delete"
+cmd = ["git"]
+subcmd = ["branch"]
+flags_any = ["D"]
+action = "ask"
+severity = "medium"
+reason = "force-deleting a branch can lose unmerged commits"
+
+[[rule]]
+id = "git-reflog-expire"
+cmd = ["git"]
+subcmd = ["reflog"]
+subcmd2 = ["expire", "delete"]
+action = "deny"
+severity = "high"
+reason = "expiring the reflog removes the last safety net for recovering commits"
+
+[[rule]]
+id = "git-gc-prune-now"
+cmd = ["git"]
+subcmd = ["gc", "prune"]
+args_regex = "^(--prune=now|now|--expire=now|--prune=all)$"
+action = "deny"
+severity = "high"
+reason = "pruning unreachable objects immediately makes lost commits unrecoverable"
+
+[[rule]]
+id = "git-filter"
+cmd = ["git", "git-filter-repo"]
+subcmd = ["filter-branch", "filter-repo", "replace"]
+action = "ask"
+severity = "high"
+reason = "history rewrite"
+
+[[rule]]
+id = "git-rm-rf"
+cmd = ["git"]
+subcmd = ["rm"]
+flags_any = ["r"]
+args_any = [".", "*"]
+action = "ask"
+severity = "medium"
+reason = "git rm -r of everything"
+
+[[rule]]
+id = "git-remote-remove"
+cmd = ["git"]
+subcmd = ["remote"]
+subcmd2 = ["remove", "rm", "set-url"]
+action = "ask"
+severity = "low"
+reason = "changing where pushes go"
+
+[[rule]]
+id = "git-worktree-remove-force"
+cmd = ["git"]
+subcmd = ["worktree"]
+subcmd2 = ["remove", "prune"]
+flags_any = ["f", "force"]
+action = "ask"
+severity = "medium"
+reason = "force-removing a worktree discards its uncommitted changes"
+
+# ------------------------------------------------------------------ gh (GitHub CLI) — budgeted
+
+[[rule]]
+id = "gh-repo-delete"
+cmd = ["gh"]
+subcmd = ["repo"]
+subcmd2 = ["delete", "archive", "rename"]
+action = "deny"
+severity = "critical"
+reason = "deleting/archiving/renaming a repository"
+
+[[rule]]
+id = "gh-write"
+cmd = ["gh"]
+subcmd = ["pr", "issue", "release", "repo", "gist", "label", "project", "secret", "variable", "ruleset", "workflow", "run"]
+subcmd2 = ["merge", "create", "comment", "close", "edit", "review", "ready", "reopen", "delete", "lock", "unlock", "pin", "unpin", "transfer", "set", "remove", "fork", "sync", "upload", "rerun", "cancel", "enable", "disable", "run", "clone"]
+action = "allow"
+severity = "info"
+reason = "GitHub write; counted against github_write budget"
+budget = "github_write"
+
+[[rule]]
+id = "gh-api-write"
+cmd = ["gh"]
+subcmd = ["api"]
+regex = "(?i)(-X|--method)[ =]'?(POST|PATCH|PUT|DELETE)|(^|\\s)(-f|-F|--field|--raw-field|--input)(\\s|=)"
+action = "allow"
+severity = "info"
+reason = "GitHub API write; counted against github_write budget"
+budget = "github_write"
+
+[[rule]]
+id = "gh-api-delete"
+cmd = ["gh"]
+subcmd = ["api"]
+regex = "(?i)(-X|--method)[ =]'?DELETE"
+action = "ask"
+severity = "high"
+reason = "DELETE call against the GitHub API"
+
+[[rule]]
+id = "gh-pr-merge-admin"
+cmd = ["gh"]
+subcmd = ["pr"]
+subcmd2 = ["merge"]
+flags_any = ["admin", "delete-branch"]
+action = "ask"
+severity = "medium"
+reason = "merging with admin override or deleting the source branch"
+
+# ------------------------------------------------------------------ docker / compose
+
+[[rule]]
+id = "docker-prune"
+cmd = ["docker", "podman"]
+subcmd = ["system", "volume", "image", "container", "network", "builder", "buildx"]
+subcmd2 = ["prune"]
+action = "deny"
+severity = "critical"
+reason = "prune removes volumes/images/containers you did not create (lab incident: 62 volumes lost)"
+
+[[rule]]
+id = "docker-volume-rm"
+cmd = ["docker", "podman"]
+subcmd = ["volume"]
+subcmd2 = ["rm", "remove"]
+action = "deny"
+severity = "critical"
+reason = "deleting a docker volume destroys its data; not undoable"
+
+[[rule]]
+id = "docker-rm-force-broad"
+cmd = ["docker", "podman"]
+subcmd = ["rm", "container", "stop", "kill"]
+flags_any = ["f", "force"]
+dynamic_args = true
+action = "deny"
+severity = "high"
+reason = "force-removing containers selected by $(docker ps ...) or a variable"
+
+[[rule]]
+id = "docker-rm-force"
+cmd = ["docker", "podman"]
+subcmd = ["rm"]
+flags_any = ["f", "force", "v", "volumes"]
+action = "ask"
+severity = "medium"
+reason = "force-removing a running container (and -v its anonymous volumes)"
+
+[[rule]]
+id = "docker-rmi-force"
+cmd = ["docker", "podman"]
+subcmd = ["rmi", "image"]
+flags_any = ["f", "force"]
+action = "ask"
+severity = "medium"
+reason = "force-removing images"
+
+[[rule]]
+id = "docker-compose-down-volumes"
+cmd = ["docker", "docker-compose", "podman-compose"]
+regex = "(?=.*(^|\\s)(compose\\s+)?down(\\s|$))(?=.*(\\s-v(\\s|$)|\\s--volumes|\\s--rmi))"
+action = "deny"
+severity = "critical"
+reason = "compose down -v deletes the stack's volumes (database data)"
+
+[[rule]]
+id = "docker-compose-down"
+cmd = ["docker", "docker-compose", "podman-compose"]
+regex = "(^|\\s)(compose\\s+)?down(\\s|$)"
+action = "ask"
+severity = "medium"
+reason = "stopping and removing a compose stack"
+
+[[rule]]
+id = "docker-privileged-root-mount"
+cmd = ["docker", "podman"]
+subcmd = ["run", "create"]
+regex = "--privileged|(-v|--volume|--mount)[ =]'?(/:|/\\s|type=bind,source=/,|/dev:|/etc:|/var/run/docker.sock)"
+action = "ask"
+severity = "high"
+reason = "container with host root / docker socket / privileged access"
+
+[[rule]]
+id = "docker-stop-all"
+cmd = ["docker", "podman"]
+subcmd = ["stop", "kill", "restart"]
+dynamic_args = true
+action = "ask"
+severity = "medium"
+reason = "stopping containers selected dynamically"
+
+# ------------------------------------------------------------------ kubernetes / helm / terraform
+
+[[rule]]
+id = "kubectl-delete-broad"
+cmd = ["kubectl", "oc"]
+subcmd = ["delete"]
+regex = "(?i)(\\s--all(\\s|$)|\\s-A(\\s|$)|--all-namespaces|\\s(ns|namespace|namespaces|pv|persistentvolume|persistentvolumes|crd|customresourcedefinition|node|nodes)(\\s|$))"
+action = "deny"
+severity = "critical"
+reason = "deleting namespaces, nodes, PVs, CRDs or everything in a namespace"
+
+[[rule]]
+id = "kubectl-delete"
+cmd = ["kubectl", "oc"]
+subcmd = ["delete"]
+action = "ask"
+severity = "high"
+reason = "kubectl delete is not undoable from here"
+
+[[rule]]
+id = "kubectl-drain-cordon"
+cmd = ["kubectl", "oc"]
+subcmd = ["drain", "cordon", "taint", "replace", "patch", "scale", "rollout"]
+action = "ask"
+severity = "medium"
+reason = "cluster state change"
+
+[[rule]]
+id = "helm-uninstall"
+cmd = ["helm"]
+subcmd = ["uninstall", "delete", "del", "rollback"]
+action = "ask"
+severity = "high"
+reason = "helm uninstall removes a release and its resources"
+
+[[rule]]
+id = "terraform-destroy"
+cmd = ["terraform", "tofu", "terragrunt"]
+subcmd = ["destroy"]
+action = "deny"
+severity = "critical"
+reason = "terraform destroy tears down infrastructure"
+
+[[rule]]
+id = "terraform-apply-auto"
+cmd = ["terraform", "tofu", "terragrunt"]
+subcmd = ["apply"]
+flags_any = ["auto-approve"]
+action = "deny"
+severity = "critical"
+reason = "terraform apply -auto-approve changes infrastructure with no human review"
+
+[[rule]]
+id = "terraform-apply"
+cmd = ["terraform", "tofu", "terragrunt", "pulumi"]
+subcmd = ["apply", "up", "destroy"]
+action = "ask"
+severity = "high"
+reason = "infrastructure change"
+budget = "deploy"
+
+[[rule]]
+id = "terraform-state-rm"
+cmd = ["terraform", "tofu"]
+subcmd = ["state"]
+subcmd2 = ["rm", "mv", "push", "replace-provider"]
+action = "ask"
+severity = "high"
+reason = "editing terraform state by hand"
+
+[[rule]]
+id = "cloud-destructive"
+cmd = ["aws", "gcloud", "az"]
+regex = "(?i)(\\s(delete|terminate|destroy|rm|remove|purge|deregister)(-|\\s|$))|\\srb\\s.*--force|s3\\s+rm\\s.*--recursive"
+action = "ask"
+severity = "high"
+reason = "destructive cloud CLI operation (not undoable)"
+
+# ------------------------------------------------------------------ system services / power
+
+[[rule]]
+id = "systemctl-destructive"
+cmd = ["systemctl"]
+subcmd = ["stop", "disable", "mask", "restart", "kill", "isolate", "reset-failed", "revert", "edit", "set-default", "unmask"]
+action = "ask"
+severity = "high"
+reason = "changing a system service (stop/disable/mask/restart); #59060-class incident"
+
+[[rule]]
+id = "systemctl-user-ok"
+cmd = ["systemctl"]
+subcmd = ["stop", "disable", "restart", "mask"]
+flags_any = ["user"]
+action = "ask"
+severity = "medium"
+reason = "changing a user service"
+
+[[rule]]
+id = "service-cmd"
+cmd = ["service", "rc-service", "initctl", "launchctl", "sv"]
+regex = "(?i)\\s(stop|disable|restart|unload|remove|bootout|down|kill|force-stop)(\\s|$)"
+action = "ask"
+severity = "high"
+reason = "stopping or disabling a system service"
+
+[[rule]]
+id = "power"
+cmd = ["reboot", "shutdown", "halt", "poweroff", "telinit"]
+action = "deny"
+severity = "critical"
+reason = "rebooting or powering off the machine"
+
+[[rule]]
+id = "init-runlevel"
+cmd = ["init"]
+args_any = ["0", "6", "1", "S", "s"]
+action = "deny"
+severity = "critical"
+reason = "init runlevel change (halt/reboot/single-user)"
+
+[[rule]]
+id = "systemctl-power"
+cmd = ["systemctl"]
+subcmd = ["reboot", "poweroff", "halt", "kexec", "suspend", "hibernate", "rescue", "emergency"]
+action = "deny"
+severity = "critical"
+reason = "rebooting or powering off via systemctl"
+
+[[rule]]
+id = "systemctl-daemon-reexec"
+cmd = ["systemctl"]
+subcmd = ["daemon-reexec"]
+action = "ask"
+severity = "medium"
+reason = "re-executing systemd"
+
+[[rule]]
+id = "mount-umount"
+cmd = ["mount", "umount", "mountpoint", "swapoff", "losetup", "zfs", "zpool", "lvremove", "vgremove", "pvremove", "cryptsetup"]
+flags_none = ["l", "list", "h", "help", "V", "version"]
+min_positional = 1
+action = "ask"
+severity = "high"
+reason = "changing mounts/volumes (#59060: 'fucked up mounts')"
+
+[[rule]]
+id = "fstab-crypttab"
+cmd = ["cp", "mv", "tee", "sed", "ln", "install", "truncate", "dd"]
+args_regex = "^/etc/(fstab|crypttab|mtab)$"
+action = "deny"
+severity = "critical"
+reason = "editing /etc/fstab or crypttab can make the system unbootable"
+
+# ------------------------------------------------------------------ processes
+
+[[rule]]
+id = "kill-all-processes"
+cmd = ["kill"]
+args_any = ["-1", "1"]
+action = "deny"
+severity = "critical"
+reason = "kill -1 / kill of PID 1 signals every process or init"
+
+[[rule]]
+id = "pkill-killall"
+cmd = ["pkill", "killall", "killall5", "skill", "fuser"]
+flags_none = ["l", "list", "L", "table"]
+action = "ask"
+severity = "high"
+reason = "kills processes by name/pattern, including ones this agent did not start (lab incident: 15 unrelated Codex processes)"
+
+[[rule]]
+id = "kill-dynamic"
+cmd = ["kill"]
+dynamic_args = true
+action = "ask"
+severity = "high"
+reason = "kill with PIDs from $(pgrep ...)/xargs: may hit processes you did not start"
+
+[[rule]]
+id = "kill-pid"
+cmd = ["kill"]
+action = "allow"
+severity = "info"
+reason = "kill of an explicit PID"
+mutates = false
+
+# ------------------------------------------------------------------ disks / filesystems
+
+[[rule]]
+id = "dd-device"
+cmd = ["dd"]
+args_regex = "^of=/dev/(?!null|zero|stdout|stderr|fd/)"
+action = "deny"
+severity = "critical"
+reason = "dd writing directly to a block device"
+
+[[rule]]
+id = "dd-outside"
+cmd = ["dd"]
+args_regex = "^of=/(etc|usr|boot|var|lib|bin|sbin)(/|$)"
+action = "deny"
+severity = "critical"
+reason = "dd writing into a system directory"
+
+[[rule]]
+id = "mkfs-wipefs"
+cmd = ["mkfs", "mkfs.ext2", "mkfs.ext3", "mkfs.ext4", "mkfs.xfs", "mkfs.btrfs", "mkfs.vfat", "mkfs.fat", "mkfs.ntfs", "mkfs.exfat", "mke2fs", "mkswap", "wipefs", "parted", "fdisk", "sfdisk", "gdisk", "cfdisk", "sgdisk", "blkdiscard", "hdparm", "nvme", "badblocks", "e2fsck", "fsck", "resize2fs", "tune2fs", "xfs_repair"]
+action = "deny"
+severity = "critical"
+reason = "disk partitioning / filesystem creation or repair"
+
+[[rule]]
+id = "redirect-to-device"
+redirect_path_any = ["dev"]
+action = "deny"
+severity = "critical"
+reason = "redirecting output to a device node"
+
+[[rule]]
+id = "cat-or-write-device"
+cmd = ["cp", "mv", "tee", "cat", "shred"]
+args_regex = "^/dev/(sd|nvme|hd|vd|xvd|mmcblk|disk|mapper|dm-|md|loop|sr)"
+action = "deny"
+severity = "critical"
+reason = "writing to a block device"
+
+# ------------------------------------------------------------------ permissions / ownership
+
+[[rule]]
+id = "chmod-chown-recursive-root-home"
+cmd = ["chmod", "chown", "chgrp", "setfacl", "chattr"]
+flags_any = ["R", "recursive"]
+args_path_any = ["root", "home", "system", "etc", "ancestor"]
+action = "deny"
+severity = "critical"
+reason = "recursive permission/ownership change on /, home or a system tree"
+
+[[rule]]
+id = "chmod-chown-system-file"
+cmd = ["chmod", "chown", "chgrp", "chattr"]
+args_path_any = ["etc", "system", "ssh", "dev"]
+action = "ask"
+severity = "high"
+reason = "permission/ownership change on a system file or SSH key"
+
+[[rule]]
+id = "chmod-777-recursive"
+cmd = ["chmod"]
+flags_any = ["R", "recursive"]
+args_any = ["777", "a+rwx", "o+w", "a+w", "0777"]
+action = "ask"
+severity = "medium"
+reason = "world-writable recursive chmod"
+
+[[rule]]
+id = "chattr-immutable-system"
+cmd = ["chattr"]
+args_path_any = ["etc", "system"]
+action = "deny"
+severity = "high"
+reason = "changing file attributes on system files"
+
+# ------------------------------------------------------------------ databases
+
+[[rule]]
+id = "sql-drop-truncate"
+cmd = ["sqlite3", "psql", "mysql", "mariadb", "mongosh", "mongo", "redis-cli", "clickhouse-client", "duckdb", "cqlsh"]
+text_regex = "(?i)\\b(DROP\\s+(TABLE|DATABASE|SCHEMA|INDEX|VIEW|COLLECTION|USER|ROLE)|TRUNCATE(\\s+TABLE)?\\s+\\w|FLUSHALL|FLUSHDB|dropDatabase|\\.drop\\(\\))"
+action = "deny"
+severity = "critical"
+reason = "DROP/TRUNCATE/FLUSH in a database command"
+
+[[rule]]
+id = "sql-delete-no-where"
+cmd = ["sqlite3", "psql", "mysql", "mariadb", "duckdb", "clickhouse-client"]
+text_regex = "(?i)\\bDELETE\\s+FROM\\s+[`\"\\w.]+\\s*(;|$|\\n)"
+action = "deny"
+severity = "critical"
+reason = "DELETE FROM without a WHERE clause"
+
+[[rule]]
+id = "sql-update-no-where"
+cmd = ["sqlite3", "psql", "mysql", "mariadb", "duckdb"]
+text_regex = "(?i)\\bUPDATE\\s+[`\"\\w.]+\\s+SET\\s+[^;]*?(;|$)(?![^;]*WHERE)"
+action = "ask"
+severity = "high"
+reason = "UPDATE without a WHERE clause"
+
+[[rule]]
+id = "db-tool-destructive"
+cmd = ["dropdb", "mongorestore", "pg_restore", "redis-cli"]
+regex = "(?i)^dropdb|--drop|-c\\s|--clean|FLUSHALL|FLUSHDB"
+action = "deny"
+severity = "critical"
+reason = "database drop/restore-with-drop"
+
+[[rule]]
+id = "migrations-destructive"
+cmd = ["prisma", "npx", "pnpm", "yarn", "alembic", "rails", "bin/rails", "manage.py", "django-admin", "sequelize", "knex", "drizzle-kit"]
+regex = "(?i)(migrate\\s+reset|db\\s+(reset|drop|push\\s.*--force-reset|wipe)|flush(\\s|$)|downgrade\\s+base|migrate\\s+zero|schema:drop|db:drop)"
+action = "deny"
+severity = "critical"
+reason = "database reset / drop through an ORM or migration tool"
+
+# ------------------------------------------------------------------ pipe-to-shell / remote code
+
+[[rule]]
+id = "curl-pipe-shell"
+cmd = ["sh", "bash", "zsh", "dash", "ksh", "fish", "python", "python3", "perl", "ruby", "node", "php", "pwsh", "powershell"]
+pipe_from = ["curl", "wget", "fetch", "http", "https", "aria2c", "nc", "ncat", "netcat", "socat"]
+action = "deny"
+severity = "critical"
+reason = "piping a download straight into an interpreter runs unreviewed remote code"
+
+[[rule]]
+id = "pipe-to-shell"
+cmd = ["sh", "bash", "zsh", "dash", "ksh", "fish"]
+pipe_from_any = true
+max_positional = 0
+action = "ask"
+severity = "high"
+reason = "stdin piped into a shell (base64/echo/cat | sh): the real command is not visible"
+
+[[rule]]
+id = "shell-from-stdin-redirect"
+cmd = ["sh", "bash", "zsh"]
+regex = "^(sh|bash|zsh)( -[a-z]+)*$"
+action = "ask"
+severity = "medium"
+reason = "bare shell reading its script from stdin"
+mutates = true
+
+[[rule]]
+id = "interpreter-inline-destructive"
+cmd = ["python", "python3", "python2", "perl", "ruby", "node", "php", "deno", "bun", "osascript"]
+args_regex = "(?i)(shutil\\.rmtree|os\\.(remove|unlink|rmdir|system|removedirs)|subprocess|rm -rf|unlink\\(|rmSync|rimraf|fs\\.rm|FileUtils\\.rm|File\\.delete|unlink |exec\\(|spawn\\(|Popen|pathlib.*unlink|\\.drop\\(|DROP TABLE|TRUNCATE|truncate\\(|open\\([^)]*['\\\"]w)"
+action = "ask"
+severity = "high"
+reason = "inline interpreter code that deletes, overwrites or spawns commands; cannot be parsed"
+
+[[rule]]
+id = "base64-decode-exec"
+cmd = ["base64", "xxd", "openssl"]
+regex = "(?i)-d|--decode|enc -d|-r"
+action = "allow"
+severity = "info"
+reason = "decode step (pipe target decides)"
+
+[[rule]]
+id = "nc-reverse-shell"
+cmd = ["nc", "ncat", "netcat", "socat", "telnet"]
+regex = "(?i)-e\\s|exec:|/bin/(ba)?sh|-c\\s"
+action = "deny"
+severity = "critical"
+reason = "reverse/bind shell"
+
+# ------------------------------------------------------------------ cron / users / firewall / packages
+
+[[rule]]
+id = "crontab-remove"
+cmd = ["crontab"]
+flags_any = ["r", "remove"]
+action = "deny"
+severity = "critical"
+reason = "crontab -r deletes every scheduled job for the user"
+
+[[rule]]
+id = "crontab-write"
+cmd = ["crontab"]
+flags_none = ["l", "list"]
+action = "ask"
+severity = "medium"
+reason = "replacing the crontab"
+
+[[rule]]
+id = "user-mgmt"
+cmd = ["userdel", "usermod", "useradd", "groupdel", "groupmod", "passwd", "chpasswd", "deluser", "adduser", "visudo", "chsh"]
+action = "ask"
+severity = "high"
+reason = "changing user accounts or passwords"
+
+[[rule]]
+id = "firewall"
+cmd = ["iptables", "ip6tables", "nft", "ufw", "firewall-cmd", "pfctl"]
+flags_none = ["L", "list", "S", "status", "n"]
+regex = "(?i)(-F|--flush|-X|-D|--delete|disable|reset|delete|flush|deny|drop|reject|-P\\s+\\w+\\s+DROP)"
+action = "ask"
+severity = "high"
+reason = "firewall change can lock you out of a remote host"
+
+[[rule]]
+id = "network-down"
+cmd = ["ip", "ifconfig", "nmcli", "netplan", "ifdown", "wg-quick", "tailscale"]
+regex = "(?i)(\\s(down|del|delete|flush|disconnect|logout|disable)(\\s|$)|link set .* down|dev \\S+ down|\\sapply)"
+action = "ask"
+severity = "high"
+reason = "taking an interface or VPN down can cut the session"
+
+[[rule]]
+id = "pkg-remove"
+cmd = ["apt", "apt-get", "aptitude", "dnf", "yum", "zypper", "pacman", "apk", "brew", "snap", "flatpak", "emerge"]
+regex = "(?i)(\\s(remove|purge|autoremove|uninstall|erase|rm|zap)(\\s|$)|pacman\\s+-R|apk\\s+del|-Rns)"
+action = "ask"
+severity = "high"
+reason = "removing system packages"
+
+[[rule]]
+id = "pkg-install-system"
+cmd = ["apt", "apt-get", "aptitude", "dnf", "yum", "zypper", "pacman", "apk", "snap", "flatpak", "emerge"]
+regex = "(?i)(\\s(install|upgrade|dist-upgrade|full-upgrade|update|add|refresh)(\\s|$)|pacman\\s+-S)"
+action = "ask"
+severity = "medium"
+reason = "changing system packages"
+
+[[rule]]
+id = "pip-system-install"
+cmd = ["pip", "pip3", "python", "python3"]
+regex = "(?i)(^pip3?\\s+(install|uninstall)|-m\\s+pip\\s+(install|uninstall)).*(--break-system-packages|--user|--system)"
+action = "ask"
+severity = "medium"
+reason = "installing into the system/user Python rather than a venv"
+
+[[rule]]
+id = "npm-global"
+cmd = ["npm", "pnpm", "yarn", "bun"]
+regex = "(?i)(?=.*\\s(i|install|add|uninstall|remove|rm|link|unlink)(\\s|$))(?=.*(\\s-g(\\s|$)|\\s--global(\\s|$)|\\sglobal\\s))"
+action = "ask"
+severity = "medium"
+reason = "global package install/removal"
+
+[[rule]]
+id = "publish"
+cmd = ["npm", "pnpm", "yarn", "twine", "cargo", "gem", "poetry", "flit", "hatch", "uv", "mvn", "gradle", "goreleaser", "docker", "podman"]
+regex = "(?i)(^|\\s)(publish|upload|deploy|release)(\\s|$)|docker\\s+push|podman\\s+push"
+action = "ask"
+severity = "high"
+reason = "publishing a package or image to a registry (not undoable)"
+budget = "publish"
+
+# ------------------------------------------------------------------ writing to sensitive paths
+
+[[rule]]
+id = "write-etc"
+redirect_path_any = ["etc", "system"]
+action = "ask"
+severity = "high"
+reason = "writing to a system directory via redirection"
+
+[[rule]]
+id = "write-ssh-rc"
+redirect_path_any = ["ssh", "shell_rc"]
+action = "deny"
+severity = "critical"
+reason = "writing to ~/.ssh or a shell startup file via redirection"
+
+[[rule]]
+id = "write-home-dotfile-redirect"
+redirect_path_any = ["home_toplevel"]
+action = "ask"
+severity = "medium"
+reason = "writing a file at the top of the home directory"
+
+[[rule]]
+id = "copy-into-ssh-rc"
+cmd = ["cp", "mv", "tee", "ln", "install", "rsync", "sed", "truncate", "touch", "chmod", "chown", "cat", "echo", "printf", "ssh-keygen", "ssh-add", "ssh-copy-id"]
+args_path_any = ["ssh", "shell_rc"]
+action = "ask"
+severity = "high"
+reason = "touching ~/.ssh or shell startup files"
+
+[[rule]]
+id = "ssh-keygen-overwrite"
+cmd = ["ssh-keygen"]
+flags_any = ["f", "R", "y"]
+action = "ask"
+severity = "high"
+reason = "ssh-keygen -f can overwrite an existing key; -R edits known_hosts"
+
+[[rule]]
+id = "copy-into-system"
+cmd = ["cp", "mv", "tee", "ln", "install", "rsync", "sed", "touch", "truncate", "mkdir", "patch"]
+args_path_any = ["etc", "system"]
+flags_none = ["n", "dry-run"]
+action = "ask"
+severity = "high"
+reason = "writing into a system directory"
+
+[[rule]]
+id = "sed-inplace-outside"
+cmd = ["sed", "perl"]
+flags_any = ["i", "i.bak"]
+args_path_any = ["outside", "home"]
+action = "ask"
+severity = "medium"
+reason = "in-place edit of a file outside the project"
+
+[[rule]]
+id = "mv-root-home"
+cmd = ["mv"]
+args_path_any = ["root", "home", "ancestor"]
+action = "deny"
+severity = "high"
+reason = "moving into or over /, home or a parent of the project"
+
+[[rule]]
+id = "cp-recursive-root-home"
+cmd = ["cp"]
+flags_any = ["r", "R", "recursive", "a"]
+args_path_any = ["root", "home", "ancestor"]
+action = "deny"
+severity = "high"
+reason = "recursive copy over /, home or a parent of the project"
+
+[[rule]]
+id = "rsync-delete-outside"
+cmd = ["rsync"]
+flags_any = ["delete", "delete-before", "delete-after", "delete-during", "delete-excluded"]
+args_path_any = ["outside", "root", "home", "system", "ancestor", "dynamic"]
+action = "deny"
+severity = "critical"
+reason = "rsync --delete against a path outside the project mirrors deletions there"
+
+[[rule]]
+id = "rsync-delete"
+cmd = ["rsync"]
+flags_any = ["delete", "delete-before", "delete-after", "delete-during", "delete-excluded"]
+action = "ask"
+severity = "high"
+reason = "rsync --delete removes files on the destination"
+
+[[rule]]
+id = "rsync-remote-delete"
+cmd = ["rsync", "scp"]
+regex = "(?i)--delete.*\\S+@\\S+:|\\S+@\\S+:.*--delete"
+action = "ask"
+severity = "high"
+reason = "deleting on a remote host via rsync (not undoable)"
+
+[[rule]]
+id = "history-clear"
+cmd = ["history"]
+flags_any = ["c", "w"]
+action = "ask"
+severity = "low"
+reason = "clearing shell history"
+
+# ------------------------------------------------------------------ privilege / remote
+
+[[rule]]
+id = "sudo-any"
+wrappers_any = ["sudo", "doas", "pkexec", "su", "runuser", "sudo -s", "su -c"]
+action = "ask"
+severity = "medium"
+reason = "privilege escalation"
+
+[[rule]]
+id = "sudo-interactive"
+cmd = ["sudo", "doas", "su"]
+action = "ask"
+severity = "medium"
+reason = "privilege escalation"
+
+[[rule]]
+id = "ssh-interactive-or-unknown"
+cmd = ["ssh"]
+action = "allow"
+severity = "info"
+reason = "ssh session without an inline command"
+mutates = false
+
+[[rule]]
+id = "remote-systemctl"
+cmd = ["systemctl", "service", "reboot", "shutdown", "init", "halt", "poweroff"]
+remote = true
+action = "ask"
+severity = "high"
+reason = "service/power change on a remote host (not undoable)"
+
+# ------------------------------------------------------------------ misc footguns
+
+[[rule]]
+id = "fork-bomb-regex"
+regex = ":\\(\\)\\s*\\{\\s*:\\s*\\|\\s*:"
+action = "deny"
+severity = "critical"
+reason = "fork bomb"
+
+[[rule]]
+id = "overwrite-with-null"
+cmd = ["cp", "cat"]
+args_any = ["/dev/null"]
+args_path_any = ["system", "etc", "ssh", "shell_rc", "outside"]
+action = "ask"
+severity = "high"
+reason = "truncating a file outside the project"
+
+[[rule]]
+id = "truncate-outside"
+cmd = ["truncate"]
+args_path_any = ["outside", "system", "etc"]
+action = "ask"
+severity = "medium"
+reason = "truncating a file outside the project"
+
+[[rule]]
+id = "ln-force-system"
+cmd = ["ln"]
+flags_any = ["f", "force"]
+args_path_any = ["system", "etc", "home"]
+action = "ask"
+severity = "medium"
+reason = "force-replacing a system link"
+
+[[rule]]
+id = "env-exfil"
+cmd = ["curl", "wget", "http"]
+regex = "(?i)(-d|--data|--data-binary|-F|--form|--upload-file|-T|--post-file|--body-file)[ =]*(\\S*=)?['\\\"]?@?(~?/|\\$HOME|\\.env|id_rsa|\\.ssh|\\.aws|\\.npmrc|\\.pypirc|\\.netrc|\\.git-credentials|secrets)"
+action = "ask"
+severity = "high"
+reason = "uploading a local file (possibly secrets) to a URL"
+
+[[rule]]
+id = "chroot-or-nsenter"
+cmd = ["chroot", "nsenter", "unshare", "machinectl"]
+action = "ask"
+severity = "medium"
+reason = "entering another root/namespace; inner commands are not parsed"
+
+[[rule]]
+id = "screen-tmux-send"
+cmd = ["tmux", "screen"]
+regex = "(?i)send-keys|-X stuff|kill-server|kill-session"
+action = "ask"
+severity = "medium"
+reason = "sending keystrokes to another session or killing sessions"
+
+[[rule]]
+id = "at-batch-job"
+cmd = ["at", "batch", "systemd-run"]
+action = "ask"
+severity = "medium"
+reason = "scheduling a command to run later outside the guard"
+
+[[rule]]
+id = "write-history-cleanup"
+cmd = ["unset"]
+args_any = ["HISTFILE"]
+action = "ask"
+severity = "low"
+reason = "disabling history"
