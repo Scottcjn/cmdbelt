@@ -10,11 +10,20 @@ readme = "README.md"
 license = "Apache-2.0"
 requires-python = ">=3.10"
 dependencies = ["tomli>=2.0; python_version < '3.11'"]
+keywords = ["agent", "ai-agent", "safety", "guardrail", "shell", "undo", "claude-code", "codex", "llm-tools", "sandbox"]
 classifiers = [
   "Programming Language :: Python :: 3",
   "Operating System :: POSIX",
   "Topic :: Security",
+  "Topic :: Software Development :: Quality Assurance",
+  "Intended Audience :: Developers",
+  "Environment :: Console",
 ]
+
+[project.urls]
+Homepage = "https://github.com/Scottcjn/cmdbelt"
+Source = "https://github.com/Scottcjn/cmdbelt"
+Issues = "https://github.com/Scottcjn/cmdbelt/issues"
 
 [project.scripts]
 cmdbelt = "cmdbelt.cli:main"
