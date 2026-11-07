@@ -1,0 +1,48 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "cmdbelt"
+version = "0.1.0"
+description = "A seatbelt for coding agents: one policy (allow/ask/deny), snapshot + undo, shared budgets, across Claude Code, Codex and any shell."
+readme = "README.md"
+license = "Apache-2.0"
+requires-python = ">=3.10"
+dependencies = ["tomli>=2.0; python_version < '3.11'"]
+classifiers = [
+  "Programming Language :: Python :: 3",
+  "Operating System :: POSIX",
+  "Topic :: Security",
+]
+
+[project.scripts]
+cmdbelt = "cmdbelt.cli:main"
+agent-guard = "cmdbelt.cli:main"
+
+[project.optional-dependencies]
+dev = ["pytest", "ruff", "mypy"]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+cmdbelt = ["rules/*.toml", "py.typed"]
+
+[tool.ruff]
+target-version = "py310"
+line-length = 100
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "UP", "B", "SIM", "RUF"]
+ignore = ["SIM108", "RUF012"]
+
+[tool.mypy]
+python_version = "3.10"
+strict = true
+packages = ["cmdbelt"]
+mypy_path = "src"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
