@@ -46,4 +46,7 @@ mypy_path = "src"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+# src-layout: import cmdbelt without an editable install so the suite collects
+# on a plain `python -m pytest` (previously errored: No module named 'cmdbelt').
+pythonpath = ["src"]
 addopts = "--basetemp=.tmp-tests -p no:cacheprovider"
