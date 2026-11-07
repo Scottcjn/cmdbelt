@@ -165,7 +165,8 @@ def shim_snippet() -> str:
         "# Put a directory first on PATH containing wrappers that route through cmdbelt:\n"
         "mkdir -p ~/.agent-guard/shims\n"
         "for c in rm git docker kubectl systemctl; do\n"
-        '  printf \'#!/bin/sh\\nexec cmdbelt exec --shim -- %s "$@"\\n\' "$c" > ~/.agent-guard/shims/$c\n'
+        '  printf \'#!/bin/sh\\nexec cmdbelt exec --shim -- %s "$@"\\n\' "$c" '
+        "> ~/.agent-guard/shims/$c\n"
         "  chmod +x ~/.agent-guard/shims/$c\n"
         "done\n"
         "export PATH=~/.agent-guard/shims:$PATH   # in the agent's environment only\n"

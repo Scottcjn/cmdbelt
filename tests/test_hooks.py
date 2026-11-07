@@ -90,7 +90,7 @@ def test_other_event_ignored(guard_home: Path, project: Path) -> None:
 
 
 def test_bad_json_fails_closed(guard_home: Path) -> None:
-    code, out, err = run_hook(guard_home, "{not json")
+    code, _out, err = run_hook(guard_home, "{not json")
     assert code == 2 and "fail closed" in err
 
 
