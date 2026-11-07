@@ -6,12 +6,14 @@ import argparse
 import json
 import os
 import shlex
+import shutil
+import subprocess
 import sys
 import time
 from collections.abc import Sequence
 from typing import TextIO
 
-from . import __version__
+from . import __version__, hooks, integrations
 from .audit import AuditLog
 from .budget import BudgetStore
 from .config import Config, load_config
@@ -72,6 +74,30 @@ def build_parser() -> argparse.ArgumentParser:
     sp = sub.add_parser("audit", help="show recent decisions from the audit log")
     sp.add_argument("-n", type=int, default=20)
     sp.add_argument("--json", action="store_true")
+
+    sp = sub.add_parser("exec", help="guard then run a command: snapshot, run, exit with its code")
+    sp.add_argument("--cwd")
+    sp.add_argument("--agent")
+    sp.add_argument(
+        "-y", "--yes", action="store_true", help="auto-approve 'ask' (still denies deny)"
+    )
+    sp.add_argument("--shim", action="store_true", help=argparse.SUPPRESS)
+    sp.add_argument("command", nargs=argparse.REMAINDER, help="-- <command ...>")
+
+    sp = sub.add_parser("hook", help="agent hook adapter: reads JSON on stdin")
+    sp.add_argument("agent", choices=["claude-code", "codex"])
+    sp.add_argument("--event", choices=["PreToolUse", "PermissionRequest"], default="PreToolUse")
+    sp.add_argument(
+        "--codex-ask",
+        choices=["deny", "allow"],
+        default="deny",
+        help="Codex cannot prompt from PreToolUse: map 'ask' to deny (default) or let Codex decide",
+    )
+
+    sp = sub.add_parser("install", help="print the integration snippet (never edits your files)")
+    sp.add_argument("target", choices=["claude-code", "codex", "shim"])
+    sp.add_argument("--rules", action="store_true", help="codex: print the execpolicy .rules file")
+    sp.add_argument("--codex-ask", choices=["deny", "allow"], default="deny")
     return p
 
 
@@ -179,7 +205,69 @@ def main(argv: Sequence[str] | None = None) -> int:
         return 0
     if args.cmd in ("undo", "log"):
         return _undo_or_log(args, cfg, cwd)
+    if args.cmd == "hook":
+        return hooks.serve(cfg, agent=args.agent, event=args.event, codex_ask=args.codex_ask)
+    if args.cmd == "install":
+        sys.stdout.write(
+            integrations.install_text(
+                args.target, home=args.home, rules_only=args.rules, codex_ask=args.codex_ask
+            )
+        )
+        if not args.rules:
+            sys.stdout.write(integrations.guard_home_hint(cfg.home))
+        return 0
+    if args.cmd == "exec":
+        return _exec(args, cfg, cwd)
     return 2
+
+
+def _exec(args: argparse.Namespace, cfg: Config, cwd: str) -> int:
+    words = list(args.command)
+    if words and words[0] == "--":
+        words = words[1:]
+    if not words:
+        print("exec: no command given (use: cmdbelt exec -- <command>)", file=sys.stderr)
+        return 2
+    if args.shim:
+        # invoked from a PATH shim: argv is already split, run it directly without a shell
+        command = shlex.join(words)
+        shell_cmd: list[str] = words
+    else:
+        command = command_from_args(words)
+        shell = shutil.which("bash") or "/bin/sh"
+        shell_cmd = [shell, "-c", command]
+    r = guard(cfg, command, cwd, agent=args.agent, source="exec")
+    for w in r.warnings:
+        print(f"cmdbelt: {w}", file=sys.stderr)
+    if r.action == "deny":
+        print(f"cmdbelt DENY [{r.decision.rule_id}]: {r.reason}", file=sys.stderr)
+        return EXIT_DENY
+    if r.action == "ask" and not args.yes:
+        print(f"cmdbelt ASK [{r.decision.rule_id}]: {r.reason}", file=sys.stderr)
+        if not sys.stdin.isatty():
+            print("cmdbelt: not interactive; refusing (use -y to approve)", file=sys.stderr)
+            return EXIT_ASK
+        ans = input("run it? [y/N] ").strip().lower()
+        if ans not in ("y", "yes"):
+            return EXIT_ASK
+    if r.snapshots:
+        ids = ", ".join(f"#{e.id}" for e in r.snapshots)
+        print(f"cmdbelt: snapshot {ids} taken (undo with `cmdbelt undo`)", file=sys.stderr)
+    env = dict(os.environ)
+    if args.shim:
+        # avoid recursing into our own shim for the real binary
+        shim_dir = str(cfg.home / "shims")
+        env["PATH"] = os.pathsep.join(
+            p
+            for p in env.get("PATH", "").split(os.pathsep)
+            if os.path.abspath(p or ".") != shim_dir
+        )
+    try:
+        proc = subprocess.run(shell_cmd, cwd=cwd, env=env, check=False)
+    except FileNotFoundError as exc:
+        print(f"cmdbelt: {exc}", file=sys.stderr)
+        return 127
+    return proc.returncode
 
 
 def _undo_or_log(args: argparse.Namespace, cfg: Config, cwd: str) -> int:
