@@ -12,8 +12,11 @@ from collections.abc import Sequence
 from typing import TextIO
 
 from . import __version__
+from .audit import AuditLog
+from .budget import BudgetStore
 from .config import Config, load_config
-from .engine import Decision, Engine
+from .engine import Decision
+from .guard import guard
 from .parser import format_tree
 from .snapshot import SnapshotError, SnapshotStore, snapshot_before, snapshot_roots
 
@@ -58,6 +61,15 @@ def build_parser() -> argparse.ArgumentParser:
 
     sp = sub.add_parser("log", help="list snapshots for this project root")
     sp.add_argument("--cwd")
+    sp.add_argument("-n", type=int, default=20)
+    sp.add_argument("--json", action="store_true")
+
+    sp = sub.add_parser("budget", help="show or reset shared budgets")
+    sp.add_argument("op", nargs="?", choices=["status", "reset"], default="status")
+    sp.add_argument("name", nargs="?", help="budget name (reset only; omit for all)")
+    sp.add_argument("--json", action="store_true")
+
+    sp = sub.add_parser("audit", help="show recent decisions from the audit log")
     sp.add_argument("-n", type=int, default=20)
     sp.add_argument("--json", action="store_true")
     return p
@@ -115,10 +127,48 @@ def main(argv: Sequence[str] | None = None) -> int:
         command = command_from_args(args.command)
         if not command.strip():
             parser.error("no command given (use: cmdbelt check -- <command>)")
-        engine = Engine(cfg)
-        d = engine.evaluate(command, cwd)
-        _print_decision(d, as_json=args.json, explain=args.cmd == "explain")
-        return d.exit_code
+        r = guard(
+            cfg,
+            command,
+            cwd,
+            agent=args.agent,
+            source=args.cmd,
+            consume_budget=False,
+            snapshot=False,
+            audit=not args.no_audit,
+        )
+        if r.budget is not None and r.budget.ok:
+            r.decision.notes.append(r.budget.describe())
+        _print_decision(r.decision, as_json=args.json, explain=args.cmd == "explain")
+        return r.exit_code
+    if args.cmd == "budget":
+        store = BudgetStore(cfg.home, cfg.budgets)
+        if args.op == "reset":
+            n = store.reset(args.name)
+            print(f"reset {n} event(s)" + (f" for {args.name}" if args.name else ""))
+            return 0
+        rows = store.status()
+        if args.json:
+            print(json.dumps([r.__dict__ for r in rows], indent=2))
+        for b in rows:
+            spec = cfg.budgets[b.name]
+            print(
+                f"{b.name:<16} {b.used:>4}/{b.limit:<4} per {spec.window_s}s"
+                f"  min_spacing={spec.min_spacing_s}s" + ("" if b.ok else "  OVER")
+            )
+        return 0
+    if args.cmd == "audit":
+        recs = AuditLog(cfg.home).read(last=args.n)
+        if args.json:
+            print(json.dumps(recs, indent=2))
+            return 0
+        for rec in recs:
+            print(
+                f"{rec.get('iso', '')} {str(rec.get('action', '')).upper():<5} "
+                f"{rec.get('source', '')}/{rec.get('agent') or '-'} {rec.get('rule') or '-'}  "
+                f"{rec.get('command', '')}"
+            )
+        return 0
     if args.cmd == "snapshot":
         label = command_from_args(args.command) or "(manual snapshot)"
         for e in snapshot_before(cfg, cwd, label, agent=args.agent):

@@ -105,3 +105,20 @@ def test_undo_nothing_to_do(
     run(capsys, "--home", str(guard_home), "snapshot", "x")
     code, out = run(capsys, "--home", str(guard_home), "undo", "-y")
     assert code == 0 and "nothing to undo" in out
+
+
+def test_budget_and_audit_cli(
+    guard_home: Path, project: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    code, out = run(
+        capsys, "--home", str(guard_home), "check", "--agent", "bot", "--", "git", "push"
+    )
+    assert code == 0 and "budget github_write: 0/60" in out
+    code, out = run(capsys, "--home", str(guard_home), "budget")
+    assert code == 0 and "github_write" in out and "0/60" in out
+    code, out = run(capsys, "--home", str(guard_home), "audit", "-n", "5")
+    assert code == 0 and "ALLOW check/bot git-push  git push" in out
+    code, out = run(capsys, "--home", str(guard_home), "budget", "reset", "github_write")
+    assert code == 0 and "reset 0 event(s) for github_write" in out
+    code, out = run(capsys, "--home", str(guard_home), "audit", "--json")
+    assert json.loads(out)[0]["agent"] == "bot"

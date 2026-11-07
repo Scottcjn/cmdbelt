@@ -9,6 +9,7 @@ files above the size cap are excluded with a warning.
 
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import json
 import os
@@ -245,11 +246,8 @@ class SnapshotStore:
         # files that exist now but not in the target: delete
         added = [p for s, p in changes if s == "A"]
         for rel in added:
-            full = os.path.join(self.root, rel)
-            try:
-                os.remove(full)
-            except FileNotFoundError:
-                pass
+            with contextlib.suppress(FileNotFoundError):
+                os.remove(os.path.join(self.root, rel))
         # everything tracked in the target: restore content
         self._git("read-tree", target.sha)
         self._git("checkout-index", "-a", "-f", "-q")
