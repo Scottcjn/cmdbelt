@@ -5,24 +5,19 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import shlex
 import sys
+import time
 from collections.abc import Sequence
 from typing import TextIO
 
 from . import __version__
-from .config import load_config
+from .config import Config, load_config
 from .engine import Decision, Engine
 from .parser import format_tree
+from .snapshot import SnapshotError, SnapshotStore, snapshot_before, snapshot_roots
 
 EXIT_ALLOW, EXIT_ASK, EXIT_DENY = 0, 10, 20
-
-
-def _split_dashdash(argv: Sequence[str]) -> tuple[list[str], list[str]]:
-    argv = list(argv)
-    if "--" in argv:
-        i = argv.index("--")
-        return argv[:i], argv[i + 1 :]
-    return argv, []
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -49,17 +44,31 @@ def build_parser() -> argparse.ArgumentParser:
         sp.add_argument(
             "command", nargs=argparse.REMAINDER, help="-- <command ...> or a single string"
         )
+
+    sp = sub.add_parser("snapshot", help="snapshot the project root now (before a manual command)")
+    sp.add_argument("--cwd")
+    sp.add_argument("--agent")
+    sp.add_argument("command", nargs=argparse.REMAINDER, help="label: the command that follows")
+
+    sp = sub.add_parser("undo", help="restore files from the latest snapshot (or --to N)")
+    sp.add_argument("--to", type=int, metavar="N", help="snapshot id from `log`")
+    sp.add_argument("--cwd")
+    sp.add_argument("--dry-run", action="store_true", help="list what would change")
+    sp.add_argument("-y", "--yes", action="store_true", help="do not ask for confirmation")
+
+    sp = sub.add_parser("log", help="list snapshots for this project root")
+    sp.add_argument("--cwd")
+    sp.add_argument("-n", type=int, default=20)
+    sp.add_argument("--json", action="store_true")
     return p
 
 
 def command_from_args(words: list[str]) -> str:
-    words = [w for w in words]
+    words = list(words)
     if words and words[0] == "--":
         words = words[1:]
     if len(words) == 1:
         return words[0]
-    import shlex
-
     return shlex.join(words)
 
 
@@ -101,16 +110,70 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
     cfg = load_config(args.home)
+    cwd = os.path.abspath(args.cwd) if getattr(args, "cwd", None) else os.getcwd()
     if args.cmd in ("check", "explain"):
         command = command_from_args(args.command)
         if not command.strip():
             parser.error("no command given (use: cmdbelt check -- <command>)")
         engine = Engine(cfg)
-        cwd = os.path.abspath(args.cwd) if args.cwd else os.getcwd()
         d = engine.evaluate(command, cwd)
         _print_decision(d, as_json=args.json, explain=args.cmd == "explain")
         return d.exit_code
+    if args.cmd == "snapshot":
+        label = command_from_args(args.command) or "(manual snapshot)"
+        for e in snapshot_before(cfg, cwd, label, agent=args.agent):
+            tail = "  (unchanged)" if e.reused else ""
+            print(f"snapshot #{e.id} {e.sha[:8]} root={e.root}{tail}")
+            if e.skipped:
+                print("  skipped (over size cap): " + ", ".join(e.skipped), file=sys.stderr)
+        return 0
+    if args.cmd in ("undo", "log"):
+        return _undo_or_log(args, cfg, cwd)
     return 2
+
+
+def _undo_or_log(args: argparse.Namespace, cfg: Config, cwd: str) -> int:
+    rc = 0
+    for root in snapshot_roots(cfg, cwd):
+        store = SnapshotStore(cfg.home, root, cfg.snapshot_max_file_mb)
+        if args.cmd == "log":
+            entries = store.entries()[-args.n :]
+            if args.json:
+                print(json.dumps([e.__dict__ for e in entries], indent=2))
+                continue
+            print(f"root: {root}")
+            if not entries:
+                print("  (no snapshots)")
+            for e in entries:
+                when = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(e.time))
+                flag = " =" if e.reused else "  "
+                kind = "" if e.kind == "pre-command" else f" [{e.kind}]"
+                print(f"  #{e.id:<4} {when} {e.sha[:8]}{flag} {e.command}{kind}")
+            continue
+        try:
+            target, changes = store.undo(args.to, dry_run=True)
+        except SnapshotError as exc:
+            print(f"undo: {exc}", file=sys.stderr)
+            rc = 1
+            continue
+        print(f"root: {root}\nrestore to snapshot #{target.id} ({target.command!r})")
+        if not changes:
+            print("  nothing to undo: worktree already matches the snapshot")
+            continue
+        verbs = {"A": "delete  ", "M": "restore ", "D": "recreate", "T": "restore "}
+        for status, path in changes:
+            print(f"  {verbs.get(status, status)} {path}")
+        if args.dry_run:
+            continue
+        if not args.yes and sys.stdin.isatty():
+            ans = input("proceed? [y/N] ").strip().lower()
+            if ans not in ("y", "yes"):
+                print("aborted")
+                rc = 1
+                continue
+        store.undo(args.to)
+        print(f"  restored {len(changes)} path(s); a pre-undo snapshot was taken (see `log`)")
+    return rc
 
 
 if __name__ == "__main__":  # pragma: no cover

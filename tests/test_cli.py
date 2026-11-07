@@ -75,3 +75,33 @@ def test_check_cwd_flag(
 def test_no_command_errors(guard_home: Path, capsys: pytest.CaptureFixture[str]) -> None:
     with pytest.raises(SystemExit):
         main(["--home", str(guard_home), "check"])
+
+
+def test_snapshot_undo_log_cli(
+    guard_home: Path, project: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    (project / "a.txt").write_text("v1\n")
+    code, out = run(capsys, "--home", str(guard_home), "snapshot", "--", "echo", "step1")
+    assert code == 0 and out.startswith("snapshot #1")
+    (project / "a.txt").write_text("v2\n")
+    (project / "junk.txt").write_text("x\n")
+    code, out = run(capsys, "--home", str(guard_home), "undo", "--dry-run")
+    assert code == 0 and "restore  a.txt" in out and "delete   junk.txt" in out
+    assert (project / "a.txt").read_text() == "v2\n"
+    code, out = run(capsys, "--home", str(guard_home), "undo", "-y")
+    assert code == 0 and "restored 2 path(s)" in out
+    assert (project / "a.txt").read_text() == "v1\n" and not (project / "junk.txt").exists()
+    code, out = run(capsys, "--home", str(guard_home), "log")
+    assert code == 0 and "#1" in out and "echo step1" in out and "[pre-undo]" in out
+    code, out = run(capsys, "--home", str(guard_home), "log", "--json")
+    assert json.loads(out)[0]["command"] == "echo step1"
+
+
+def test_undo_nothing_to_do(
+    guard_home: Path, project: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    code, out = run(capsys, "--home", str(guard_home), "undo", "-y")
+    assert code == 1  # no snapshots yet
+    run(capsys, "--home", str(guard_home), "snapshot", "x")
+    code, out = run(capsys, "--home", str(guard_home), "undo", "-y")
+    assert code == 0 and "nothing to undo" in out
