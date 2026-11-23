@@ -1,5 +1,7 @@
 # cmdbelt
 
+> **⚠️ Known security issues in v0.1.0 (2026-11-23).** An external security review found command strings that the default policy should deny but v0.1.0 allows (for example quoted wrapper options, brace expansion, `${IFS}`, here-docs fed to a shell, and substitutions in `for` headers or redirects), plus budget and undo bugs. We reproduced them. A fail-closed fix is in progress for v0.2.0. **Until then, do not rely on cmdbelt to stop a determined or confused agent.** Pair it with a container or VM.
+
 A seatbelt for coding agents. One local policy, three outcomes per shell command
 (**allow / ask / deny**), a **snapshot before anything that mutates files** with one-command
 **undo**, and a **shared rate budget** for outward actions across *every agent on the machine*.
